@@ -15,6 +15,8 @@ import { Member, SubscriptionType, PaymentStatus } from '../../types/member';
 import { updateMember } from '../../store/slices/memberSlice';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
 import { format, isAfter, parseISO } from 'date-fns';
+import { doc, updateDoc } from 'firebase/firestore';
+import { db } from '../../firebase/firebaseConfig';
 
 interface EditMemberDialogProps {
   open: boolean;
@@ -73,26 +75,20 @@ const EditMemberDialog: React.FC<EditMemberDialogProps> = ({ open, onClose, memb
   };
 
   const handleSubmit = async () => {
-    if (!member || !formData) return;
-
-    if (!validateDates()) return;
-
     try {
-      setIsSubmitting(true);
-      await dispatch(updateMember({ 
-        id: member.id, 
-        data: {
-          ...formData,
-          joinDate: new Date(formData.joinDate as string).toISOString(),
-          subscriptionEndDate: new Date(formData.subscriptionEndDate as string).toISOString(),
-        }
-      }));
+      if (!member?.id) {
+        throw new Error('Member ID is required for editing');
+      }
+
+      const memberRef = doc(db, 'members', member.id);
+      await updateDoc(memberRef, {
+        ...formData,
+        updatedAt: new Date().toISOString(),
+      });
+
       onClose();
-    } catch (error) {
-      console.error('Failed to update member:', error);
-      setError('Failed to update member. Please try again.');
-    } finally {
-      setIsSubmitting(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update member');
     }
   };
 

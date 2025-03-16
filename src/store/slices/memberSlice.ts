@@ -45,6 +45,9 @@ export const importMembers = createAsyncThunk(
         photoUrl: '', // Default empty photo URL
         joinDate: member.subscriptionStartDate || new Date().toISOString(), // Use start date as join date if available
         paymentStatus: 'paid',
+        address: '', // Add default empty address
+        isActive: true, // Set default to active
+        updatedAt: new Date().toISOString(), // Add current timestamp
       };
 
       const docRef = await addDoc(membersRef, newMember);

@@ -1,8 +1,9 @@
 import { lazy } from 'react';
 
 // Lazy load components
-const Dashboard = lazy(() => import('../components/pages/Dashboard'));
+const Dashboard = lazy(() => import('../components/dashboard/Dashboard'));
 const Members = lazy(() => import('../components/pages/Members'));
+const Analytics = lazy(() => import('../components/analytics/Analytics'));
 const WalkIns = lazy(() => import('../components/pages/WalkIns'));
 const Staff = lazy(() => import('../components/pages/Staff'));
 const Settings = lazy(() => import('../components/pages/Settings'));
@@ -30,6 +31,13 @@ export const routes: RouteConfig[] = [
     component: Members,
     allowedRoles: ['admin', 'manager', 'receptionist'],
     label: 'Members',
+    showInNav: true,
+  },
+  {
+    path: '/analytics',
+    component: Analytics,
+    allowedRoles: ['admin', 'manager'],
+    label: 'Analytics',
     showInNav: true,
   },
   {

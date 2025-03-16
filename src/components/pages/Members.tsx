@@ -11,12 +11,18 @@ import {
   IconButton,
   Tooltip,
   Menu,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
 } from '@mui/material';
 import {
   DataGrid,
   GridColDef,
   GridValueGetterParams,
   GridRenderCellParams,
+  GridRowSelectionModel,
 } from '@mui/x-data-grid';
 import {
   Edit as EditIcon,
@@ -24,6 +30,8 @@ import {
   FileDownload as ExportIcon,
   FileUpload as ImportIcon,
   MoreVert as MoreVertIcon,
+  Add as AddIcon,
+  Delete as DeleteIcon,
 } from '@mui/icons-material';
 import { Member, SubscriptionType } from '../../types/member';
 import { fetchMembers, setFilters } from '../../store/slices/memberSlice';
@@ -33,6 +41,9 @@ import ImportMembersDialog from '../members/ImportMembersDialog';
 import ViewMemberDialog from '../members/ViewMemberDialog';
 import EditMemberDialog from '../members/EditMemberDialog';
 import { addDays, format, parseISO } from 'date-fns';
+import { doc, deleteDoc } from 'firebase/firestore';
+import { db } from '../../firebase/firebaseConfig';
+import AddMemberDialog from '../members/AddMemberDialog';
 
 const subscriptionTypes: SubscriptionType[] = ['monthly', 'quarterly', 'semi-annual', 'annual'];
 const months = Array.from({ length: 12 }, (_, i) => ({
@@ -80,6 +91,9 @@ const Members: React.FC = () => {
     pageSize: 10,
     page: 0,
   });
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [selectedRows, setSelectedRows] = useState<GridRowSelectionModel>([]);
 
   useEffect(() => {
     dispatch(fetchMembers());
@@ -262,6 +276,21 @@ const Members: React.FC = () => {
     handleExportMenuClose();
   };
 
+  const handleDeleteMembers = async () => {
+    try {
+      // Delete selected members
+      for (const id of selectedRows) {
+        const memberRef = doc(db, 'members', id.toString());
+        await deleteDoc(memberRef);
+      }
+      setIsDeleteDialogOpen(false);
+      setSelectedRows([]);
+      dispatch(fetchMembers()); // Refresh the list
+    } catch (error) {
+      console.error('Error deleting members:', error);
+    }
+  };
+
   const filteredMembers = members.filter((member) => {
     const matchesSubscription =
       filters.subscriptionType === 'all' ||
@@ -345,6 +374,14 @@ const Members: React.FC = () => {
               <Box display="flex" gap={1}>
                 <Button
                   variant="contained"
+                  color="primary"
+                  startIcon={<AddIcon />}
+                  onClick={() => setIsAddDialogOpen(true)}
+                >
+                  Add Member
+                </Button>
+                <Button
+                  variant="contained"
                   startIcon={<ImportIcon />}
                   onClick={() => setIsImportDialogOpen(true)}
                 >
@@ -358,6 +395,16 @@ const Members: React.FC = () => {
                 >
                   Export
                 </Button>
+                {selectedRows.length > 0 && (
+                  <Button
+                    variant="contained"
+                    color="error"
+                    startIcon={<DeleteIcon />}
+                    onClick={() => setIsDeleteDialogOpen(true)}
+                  >
+                    Delete ({selectedRows.length})
+                  </Button>
+                )}
                 <Menu
                   anchorEl={exportMenuAnchor}
                   open={Boolean(exportMenuAnchor)}
@@ -379,16 +426,33 @@ const Members: React.FC = () => {
         </CardContent>
       </Card>
 
-      <DataGrid<Member>
-        rows={filteredMembers}
+      <DataGrid
+        rows={filteredMembers.map(member => ({
+          ...member,
+          id: member.id || `temp-${Math.random()}`
+        }))}
         columns={columns}
-        loading={loading}
-        paginationModel={paginationModel}
-        onPaginationModelChange={setPaginationModel}
+        initialState={{
+          pagination: {
+            paginationModel: {
+              pageSize: 10,
+            },
+          },
+        }}
         pageSizeOptions={[10, 25, 50]}
-        autoHeight
+        checkboxSelection
         disableRowSelectionOnClick
-        getRowId={(row) => row.id}
+        autoHeight
+        onRowSelectionModelChange={(newSelection) => {
+          setSelectedRows(newSelection);
+          const selected = filteredMembers.find((member) => member.id === newSelection[0]);
+          setSelectedMember(selected || null);
+        }}
+        sx={{
+          '& .MuiDataGrid-cell:focus': {
+            outline: 'none',
+          },
+        }}
       />
 
       <ImportMembersDialog
@@ -406,6 +470,33 @@ const Members: React.FC = () => {
         open={isEditDialogOpen}
         onClose={() => setIsEditDialogOpen(false)}
         member={selectedMember}
+      />
+
+      <Dialog
+        open={isDeleteDialogOpen}
+        onClose={() => setIsDeleteDialogOpen(false)}
+      >
+        <DialogTitle>Confirm Deletion</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Are you sure you want to delete {selectedRows.length} selected member{selectedRows.length === 1 ? '' : 's'}? This action cannot be undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setIsDeleteDialogOpen(false)}>Cancel</Button>
+          <Button onClick={handleDeleteMembers} color="error" variant="contained">
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <AddMemberDialog
+        open={isAddDialogOpen}
+        onClose={() => setIsAddDialogOpen(false)}
+        onSuccess={() => {
+          setIsAddDialogOpen(false);
+          dispatch(fetchMembers());
+        }}
       />
     </Box>
   );
