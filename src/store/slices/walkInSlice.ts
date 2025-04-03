@@ -1,5 +1,5 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { collection, getDocs, addDoc, updateDoc, doc, query, orderBy } from 'firebase/firestore';
+import { collection, getDocs, addDoc, updateDoc, doc, query, orderBy, deleteDoc } from 'firebase/firestore';
 import { db } from '../../firebase/firebaseConfig';
 import { WalkIn, WalkInFilters } from '../../types/walkIn';
 
@@ -60,6 +60,26 @@ export const updateWalkIn = createAsyncThunk(
   }
 );
 
+export const deleteWalkIn = createAsyncThunk(
+  'walkIns/deleteWalkIn',
+  async (id: string) => {
+    const docRef = doc(db, 'walkIns', id);
+    await deleteDoc(docRef);
+    return id;
+  }
+);
+
+export const deleteMultipleWalkIns = createAsyncThunk(
+  'walkIns/deleteMultipleWalkIns',
+  async (ids: string[]) => {
+    await Promise.all(ids.map(id => {
+      const docRef = doc(db, 'walkIns', id);
+      return deleteDoc(docRef);
+    }));
+    return ids;
+  }
+);
+
 const walkInSlice = createSlice({
   name: 'walkIns',
   initialState,
@@ -99,6 +119,12 @@ const walkInSlice = createSlice({
             ...action.payload,
           };
         }
+      })
+      .addCase(deleteWalkIn.fulfilled, (state, action) => {
+        state.walkIns = state.walkIns.filter(w => w.id && w.id !== action.payload);
+      })
+      .addCase(deleteMultipleWalkIns.fulfilled, (state, action) => {
+        state.walkIns = state.walkIns.filter(w => w.id && !action.payload.includes(w.id));
       });
   },
 });

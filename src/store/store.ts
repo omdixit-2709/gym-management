@@ -1,9 +1,9 @@
 import { configureStore } from '@reduxjs/toolkit';
-import memberReducer from './slices/memberSlice';
+import staffReducer from './slices/staffSlice';
 
 export const store = configureStore({
   reducer: {
-    members: memberReducer,
+    staff: staffReducer,
   },
 });
 

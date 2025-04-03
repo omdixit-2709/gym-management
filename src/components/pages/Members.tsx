@@ -16,6 +16,11 @@ import {
   DialogContent,
   DialogContentText,
   DialogActions,
+  Typography,
+  Paper,
+  Stack,
+  Divider,
+  Chip,
 } from '@mui/material';
 import {
   DataGrid,
@@ -32,6 +37,10 @@ import {
   MoreVert as MoreVertIcon,
   Add as AddIcon,
   Delete as DeleteIcon,
+  PeopleAlt as PeopleIcon,
+  CalendarToday as CalendarIcon,
+  Warning as WarningIcon,
+  Payment as PaymentIcon,
 } from '@mui/icons-material';
 import { Member, SubscriptionType } from '../../types/member';
 import { fetchMembers, setFilters } from '../../store/slices/memberSlice';
@@ -40,7 +49,7 @@ import { useAppDispatch } from '../../hooks/useAppDispatch';
 import ImportMembersDialog from '../members/ImportMembersDialog';
 import ViewMemberDialog from '../members/ViewMemberDialog';
 import EditMemberDialog from '../members/EditMemberDialog';
-import { addDays, format, parseISO } from 'date-fns';
+import { addDays, format, parseISO, isWithinInterval, isBefore, endOfMonth, addMonths, differenceInDays, startOfToday } from 'date-fns';
 import { doc, deleteDoc } from 'firebase/firestore';
 import { db } from '../../firebase/firebaseConfig';
 import AddMemberDialog from '../members/AddMemberDialog';
@@ -79,6 +88,19 @@ interface CsvRow {
   [key: string]: string | number; // Add index signature
 }
 
+// Summary card interface
+interface SummaryCard {
+  title: string;
+  count: number;
+  icon: React.ReactNode;
+  color: string;
+  exportOptions: Array<{
+    label: string;
+    filter: (member: Member) => boolean;
+    filename: string;
+  }>;
+}
+
 const Members: React.FC = () => {
   const dispatch = useAppDispatch();
   const { members, loading, filters } = useSelector((state: RootState) => state.members);
@@ -87,6 +109,8 @@ const Members: React.FC = () => {
   const [isViewDialogOpen, setIsViewDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [exportMenuAnchor, setExportMenuAnchor] = useState<null | HTMLElement>(null);
+  const [summaryExportMenuAnchor, setSummaryExportMenuAnchor] = useState<null | HTMLElement>(null);
+  const [selectedSummary, setSelectedSummary] = useState<SummaryCard | null>(null);
   const [paginationModel, setPaginationModel] = useState({
     pageSize: 10,
     page: 0,
@@ -153,23 +177,47 @@ const Members: React.FC = () => {
       headerName: 'Payment Status',
       width: 150,
       renderCell: (params: GridRenderCellParams<Member>) => (
-        <Box
-          sx={{
-            backgroundColor:
-              params.row.paymentStatus === 'paid'
-                ? 'success.light'
-                : params.row.paymentStatus === 'pending'
-                ? 'warning.light'
-                : 'error.light',
-            color: 'white',
-            px: 2,
-            py: 0.5,
-            borderRadius: 1,
-          }}
-        >
-          {params.row.paymentStatus.toUpperCase()}
-        </Box>
+        <Chip
+          label={params.row.paymentStatus.toUpperCase()}
+          color={
+            params.row.paymentStatus === 'paid'
+              ? 'success'
+              : params.row.paymentStatus === 'pending'
+              ? 'warning'
+              : 'error'
+          }
+          variant="outlined"
+          size="small"
+        />
       ),
+    },
+    {
+      field: 'daysUntilExpiry',
+      headerName: 'Days Until Expiry',
+      width: 150,
+      valueGetter: (params) => {
+        const today = startOfToday();
+        const endDate = new Date(params.row.subscriptionEndDate);
+        const days = differenceInDays(endDate, today);
+        return days;
+      },
+      renderCell: (params: GridRenderCellParams<Member>) => {
+        const days = params.value as number;
+        return (
+          <Chip
+            label={days < 0 ? 'Expired' : `${days} days`}
+            color={
+              days < 0
+                ? 'error'
+                : days <= 7
+                ? 'warning'
+                : 'success'
+            }
+            size="small"
+            variant={days < 0 ? 'filled' : 'outlined'}
+          />
+        );
+      },
     },
     {
       field: 'actions',
@@ -216,11 +264,25 @@ const Members: React.FC = () => {
     setExportMenuAnchor(null);
   };
 
-  const exportMembers = (filter?: 'all' | 'expiring-soon' | 'expired') => {
+  const handleSummaryExportMenuOpen = (event: React.MouseEvent<HTMLElement>, summary: SummaryCard) => {
+    setSelectedSummary(summary);
+    setSummaryExportMenuAnchor(event.currentTarget);
+  };
+
+  const handleSummaryExportMenuClose = () => {
+    setSummaryExportMenuAnchor(null);
+    setSelectedSummary(null);
+  };
+
+  const exportMembers = (filter?: 'all' | 'expiring-soon' | 'expired' | ((member: Member) => boolean), filename?: string) => {
     const today = new Date();
     const nextWeek = addDays(today, 7);
 
     const membersToExport = members.filter(member => {
+      if (typeof filter === 'function') {
+        return filter(member);
+      }
+
       const endDate = parseISO(member.subscriptionEndDate);
       
       switch (filter) {
@@ -245,7 +307,7 @@ const Members: React.FC = () => {
       'Days Until Expiry': Math.ceil(
         (new Date(member.subscriptionEndDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
       ),
-      'Status': member.paymentStatus === 'paid' ? 'Active' : 'Pending'
+      'Status': member.isActive ? 'Active' : 'Inactive'
     }));
 
     // Add serial numbers
@@ -269,11 +331,12 @@ const Members: React.FC = () => {
     const a = document.createElement('a');
     a.href = url;
     const timestamp = format(new Date(), 'dd-MM-yyyy');
-    const filterLabel = filter === 'expiring-soon' ? 'expiring-this-week' : filter || 'all';
-    a.download = `members-${filterLabel}-${timestamp}.csv`;
+    const fileLabel = filename || (filter === 'expiring-soon' ? 'expiring-this-week' : filter || 'all');
+    a.download = `members-${fileLabel}-${timestamp}.csv`;
     a.click();
     window.URL.revokeObjectURL(url);
     handleExportMenuClose();
+    handleSummaryExportMenuClose();
   };
 
   const handleDeleteMembers = async () => {
@@ -311,8 +374,197 @@ const Members: React.FC = () => {
     return matchesSubscription && matchesSearch && matchesRenewal;
   });
 
+  // Calculate summary data
+  const today = startOfToday();
+  const nextWeek = addDays(today, 7);
+  const endOfCurrentMonth = endOfMonth(today);
+
+  // Prepare summary cards
+  const summaryCards: SummaryCard[] = [
+    {
+      title: 'Total Members',
+      count: members.length,
+      icon: <PeopleIcon fontSize="large" />,
+      color: 'primary.main',
+      exportOptions: [
+        {
+          label: 'All Members',
+          filter: () => true,
+          filename: 'all-members'
+        },
+        {
+          label: 'Active Members',
+          filter: (member) => member.isActive,
+          filename: 'active-members'
+        },
+        {
+          label: 'Inactive Members',
+          filter: (member) => !member.isActive,
+          filename: 'inactive-members'
+        }
+      ]
+    },
+    {
+      title: 'Expiring Soon',
+      count: members.filter(member => {
+        const endDate = parseISO(member.subscriptionEndDate);
+        return isWithinInterval(endDate, { start: today, end: endOfCurrentMonth });
+      }).length,
+      icon: <CalendarIcon fontSize="large" />,
+      color: 'warning.main',
+      exportOptions: [
+        {
+          label: 'Expiring in 3 Days',
+          filter: (member) => {
+            const endDate = parseISO(member.subscriptionEndDate);
+            return isWithinInterval(endDate, { start: today, end: addDays(today, 3) });
+          },
+          filename: 'expiring-in-3-days'
+        },
+        {
+          label: 'Expiring in 7 Days',
+          filter: (member) => {
+            const endDate = parseISO(member.subscriptionEndDate);
+            return isWithinInterval(endDate, { start: today, end: addDays(today, 7) });
+          },
+          filename: 'expiring-in-7-days'
+        },
+        {
+          label: 'Expiring This Month',
+          filter: (member) => {
+            const endDate = parseISO(member.subscriptionEndDate);
+            return isWithinInterval(endDate, { start: today, end: endOfCurrentMonth });
+          },
+          filename: 'expiring-this-month'
+        }
+      ]
+    },
+    {
+      title: 'Expired Memberships',
+      count: members.filter(member => {
+        const endDate = parseISO(member.subscriptionEndDate);
+        return isBefore(endDate, today);
+      }).length,
+      icon: <WarningIcon fontSize="large" />,
+      color: 'error.main',
+      exportOptions: [
+        {
+          label: 'Expired Today',
+          filter: (member) => {
+            const endDate = parseISO(member.subscriptionEndDate);
+            return isBefore(endDate, today) && differenceInDays(today, endDate) <= 1;
+          },
+          filename: 'expired-today'
+        },
+        {
+          label: 'Expired This Week',
+          filter: (member) => {
+            const endDate = parseISO(member.subscriptionEndDate);
+            return isBefore(endDate, today) && differenceInDays(today, endDate) <= 7;
+          },
+          filename: 'expired-this-week'
+        },
+        {
+          label: 'All Expired Memberships',
+          filter: (member) => {
+            const endDate = parseISO(member.subscriptionEndDate);
+            return isBefore(endDate, today);
+          },
+          filename: 'all-expired'
+        }
+      ]
+    },
+    {
+      title: 'Pending Payments',
+      count: members.filter(member => member.paymentStatus !== 'paid').length,
+      icon: <PaymentIcon fontSize="large" />,
+      color: 'info.main',
+      exportOptions: [
+        {
+          label: 'Pending Payments',
+          filter: (member) => member.paymentStatus === 'pending',
+          filename: 'pending-payments'
+        },
+        {
+          label: 'Overdue Payments',
+          filter: (member) => member.paymentStatus === 'overdue',
+          filename: 'overdue-payments'
+        },
+        {
+          label: 'All Unpaid Members',
+          filter: (member) => member.paymentStatus !== 'paid',
+          filename: 'all-unpaid'
+        }
+      ]
+    }
+  ];
+
   return (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 2, p: 3 }}>
+      {/* Summary Cards */}
+      <Grid container spacing={2} mb={2}>
+        {summaryCards.map((card, index) => (
+          <Grid item xs={12} sm={6} md={3} key={index}>
+            <Card 
+              sx={{ 
+                height: '100%', 
+                cursor: 'pointer',
+                transition: 'transform 0.2s',
+                '&:hover': {
+                  transform: 'translateY(-5px)',
+                  boxShadow: 4
+                }
+              }}
+              onClick={(e) => handleSummaryExportMenuOpen(e, card)}
+            >
+              <CardContent>
+                <Stack 
+                  direction="row" 
+                  justifyContent="space-between" 
+                  alignItems="center"
+                >
+                  <Box>
+                    <Typography variant="h6" color="text.secondary">
+                      {card.title}
+                    </Typography>
+                    <Typography variant="h4" fontWeight="bold">
+                      {card.count}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Click to export
+                    </Typography>
+                  </Box>
+                  <Box 
+                    sx={{ 
+                      backgroundColor: card.color, 
+                      p: 1.5, 
+                      borderRadius: 2,
+                      color: 'white'
+                    }}
+                  >
+                    {card.icon}
+                  </Box>
+                </Stack>
+              </CardContent>
+            </Card>
+          </Grid>
+        ))}
+      </Grid>
+
+      {/* Export menu for summary cards */}
+      <Menu
+        anchorEl={summaryExportMenuAnchor}
+        open={Boolean(summaryExportMenuAnchor)}
+        onClose={handleSummaryExportMenuClose}
+      >
+        {selectedSummary?.exportOptions.map((option, index) => (
+          <MenuItem key={index} onClick={() => exportMembers(option.filter, option.filename)}>
+            {option.label}
+          </MenuItem>
+        ))}
+      </Menu>
+
+      {/* Filters and Actions Card */}
       <Card sx={{ mb: 2 }}>
         <CardContent>
           <Grid container spacing={2} alignItems="center">
@@ -426,34 +678,36 @@ const Members: React.FC = () => {
         </CardContent>
       </Card>
 
-      <DataGrid
-        rows={filteredMembers.map(member => ({
-          ...member,
-          id: member.id || `temp-${Math.random()}`
-        }))}
-        columns={columns}
-        initialState={{
-          pagination: {
-            paginationModel: {
-              pageSize: 10,
+      <Paper sx={{ flexGrow: 1, borderRadius: 2, overflow: 'hidden' }}>
+        <DataGrid
+          rows={filteredMembers.map(member => ({
+            ...member,
+            id: member.id || `temp-${Math.random()}`
+          }))}
+          columns={columns}
+          initialState={{
+            pagination: {
+              paginationModel: {
+                pageSize: 10,
+              },
             },
-          },
-        }}
-        pageSizeOptions={[10, 25, 50]}
-        checkboxSelection
-        disableRowSelectionOnClick
-        autoHeight
-        onRowSelectionModelChange={(newSelection) => {
-          setSelectedRows(newSelection);
-          const selected = filteredMembers.find((member) => member.id === newSelection[0]);
-          setSelectedMember(selected || null);
-        }}
-        sx={{
-          '& .MuiDataGrid-cell:focus': {
-            outline: 'none',
-          },
-        }}
-      />
+          }}
+          pageSizeOptions={[10, 25, 50]}
+          checkboxSelection
+          disableRowSelectionOnClick
+          autoHeight
+          onRowSelectionModelChange={(newSelection) => {
+            setSelectedRows(newSelection);
+            const selected = filteredMembers.find((member) => member.id === newSelection[0]);
+            setSelectedMember(selected || null);
+          }}
+          sx={{
+            '& .MuiDataGrid-cell:focus': {
+              outline: 'none',
+            },
+          }}
+        />
+      </Paper>
 
       <ImportMembersDialog
         open={isImportDialogOpen}

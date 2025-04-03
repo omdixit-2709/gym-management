@@ -12,12 +12,22 @@ import {
   Tooltip,
   Typography,
   Menu,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Divider,
+  Paper,
+  InputAdornment,
+  Chip,
 } from '@mui/material';
+import { DatePicker } from '@mui/x-date-pickers/DatePicker';
 import {
   DataGrid,
   GridColDef,
   GridRenderCellParams,
   GridRowSelectionModel,
+  GridToolbar,
 } from '@mui/x-data-grid';
 import {
   Add as AddIcon,
@@ -27,6 +37,10 @@ import {
   Delete as DeleteIcon,
   FileDownload as ExportIcon,
   FileUpload as ImportIcon,
+  Search as SearchIcon,
+  CalendarToday as CalendarIcon,
+  Notifications as NotificationsIcon,
+  Clear as ClearIcon,
 } from '@mui/icons-material';
 import { WalkIn, WalkInStatus } from '../../types/walkIn';
 import { RootState } from '../../store';
@@ -35,11 +49,13 @@ import {
   fetchWalkIns,
   setFilters,
   updateWalkIn,
+  deleteWalkIn,
+  deleteMultipleWalkIns,
 } from '../../store/slices/walkInSlice';
 import WalkInForm from '../walk-ins/WalkInForm';
-import { format, isWithinInterval, parseISO } from 'date-fns';
-import { exportToExcel, importFromExcel } from '../../services/walkInDataService';
-import { showError } from '../../services/notificationService';
+import { format, isWithinInterval, parseISO, startOfDay, endOfDay } from 'date-fns';
+import { exportToExcel } from '../../services/walkInDataService';
+import { showError, showSuccess, checkFollowUps } from '../../services/notificationService';
 import FollowUpManager from '../walk-ins/FollowUpManager';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -64,11 +80,31 @@ const WalkIns: React.FC = (): JSX.Element => {
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const [exportMenuAnchor, setExportMenuAnchor] = useState<null | HTMLElement>(null);
   const [selectedRows, setSelectedRows] = useState<GridRowSelectionModel>([]);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [itemsToDelete, setItemsToDelete] = useState<string[]>([]);
   const { refreshWalkIns } = useWalkIns();
 
   useEffect(() => {
     dispatch(fetchWalkIns());
   }, [dispatch]);
+
+  // Add follow-up check effect
+  useEffect(() => {
+    // Initial check
+    if (walkIns.length > 0) {
+      checkFollowUps(walkIns);
+    }
+
+    // Set up interval to check every minute
+    const intervalId = setInterval(() => {
+      if (walkIns.length > 0) {
+        checkFollowUps(walkIns);
+      }
+    }, 60000); // Check every minute
+
+    // Cleanup interval on unmount
+    return () => clearInterval(intervalId);
+  }, [walkIns]);
 
   const handleStatusChange = async (walkIn: WalkIn, newStatus: WalkInStatus) => {
     try {
@@ -79,21 +115,10 @@ const WalkIns: React.FC = (): JSX.Element => {
           updatedAt: new Date().toISOString(),
         },
       }));
+      showSuccess(`Status updated to ${newStatus.replace('_', ' ')}`);
     } catch (error) {
+      showError('Failed to update status');
       console.error('Error updating status:', error);
-    }
-  };
-
-  const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    try {
-      await importFromExcel(file);
-      dispatch(fetchWalkIns());
-    } catch (error) {
-      showError('Failed to import walk-ins');
-      console.error('Import error:', error);
     }
   };
 
@@ -106,24 +131,48 @@ const WalkIns: React.FC = (): JSX.Element => {
   };
 
   const handleExport = (filter?: 'all' | 'today' | 'upcoming') => {
-    const today = new Date();
-    const nextWeek = addDays(today, 7);
+    try {
+      const today = startOfDay(new Date());
+      const nextWeek = endOfDay(addDays(today, 7));
 
-    const walkInsToExport = walkIns.filter(walkIn => {
-      const followUpDate = new Date(walkIn.followUpDate);
-      
-      switch (filter) {
-        case 'today':
-          return format(followUpDate, 'yyyy-MM-dd') === format(today, 'yyyy-MM-dd');
-        case 'upcoming':
-          return followUpDate > today && followUpDate <= nextWeek;
-        default:
-          return true;
+      const walkInsToExport = walkIns.filter(walkIn => {
+        const followUpDate = parseISO(walkIn.followUpDate);
+        
+        switch (filter) {
+          case 'today':
+            return isWithinInterval(followUpDate, { start: startOfDay(today), end: endOfDay(today) });
+          case 'upcoming':
+            return isWithinInterval(followUpDate, { start: today, end: nextWeek });
+          default:
+            return true;
+        }
+      });
+
+      exportToExcel(walkInsToExport, `walk-ins-${filter || 'all'}`);
+      showSuccess('Walk-ins exported successfully');
+      handleExportMenuClose();
+    } catch (error) {
+      showError('Failed to export walk-ins');
+      console.error('Export error:', error);
+    }
+  };
+
+  const handleDelete = async () => {
+    try {
+      if (itemsToDelete.length === 1) {
+        await dispatch(deleteWalkIn(itemsToDelete[0]));
+      } else {
+        await dispatch(deleteMultipleWalkIns(itemsToDelete));
       }
-    });
-
-    exportToExcel(walkInsToExport, `walk-ins-${filter || 'all'}`);
-    handleExportMenuClose();
+      setDeleteConfirmOpen(false);
+      setItemsToDelete([]);
+      setSelectedRows([]);
+      refreshWalkIns();
+      showSuccess(`Successfully deleted ${itemsToDelete.length} walk-in(s)`);
+    } catch (error) {
+      showError('Failed to delete walk-in(s)');
+      console.error('Delete error:', error);
+    }
   };
 
   const columns: GridColDef[] = [
@@ -131,16 +180,19 @@ const WalkIns: React.FC = (): JSX.Element => {
       field: 'name',
       headerName: 'Name',
       width: 200,
+      renderCell: (params: GridRenderCellParams<WalkIn>) => (
+        <Box>
+          <Typography variant="body2">{params.row.name}</Typography>
+          <Typography variant="caption" color="text.secondary">
+            {params.row.email}
+          </Typography>
+        </Box>
+      ),
     },
     {
       field: 'phone',
       headerName: 'Phone',
       width: 150,
-    },
-    {
-      field: 'email',
-      headerName: 'Email',
-      width: 200,
     },
     {
       field: 'visitDate',
@@ -150,33 +202,36 @@ const WalkIns: React.FC = (): JSX.Element => {
     },
     {
       field: 'followUpDate',
-      headerName: 'Follow-up Date',
-      width: 120,
-      valueGetter: (params) =>
-        `${format(parseISO(params.row.followUpDate), 'dd/MM/yyyy')} ${params.row.followUpTime}`,
+      headerName: 'Follow-up',
+      width: 180,
+      renderCell: (params: GridRenderCellParams<WalkIn>) => (
+        <Box>
+          <Typography variant="body2">
+            {format(parseISO(params.row.followUpDate), 'dd/MM/yyyy')}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            {params.row.followUpTime}
+          </Typography>
+        </Box>
+      ),
     },
     {
       field: 'interestLevel',
       headerName: 'Interest',
       width: 120,
       renderCell: (params: GridRenderCellParams<WalkIn>) => (
-        <Box
-          sx={{
-            backgroundColor:
-              params.row.interestLevel === 'high'
-                ? 'success.light'
-                : params.row.interestLevel === 'medium'
-                ? 'warning.light'
-                : 'error.light',
-            color: 'white',
-            px: 2,
-            py: 0.5,
-            borderRadius: 1,
-            textTransform: 'capitalize',
-          }}
-        >
-          {params.row.interestLevel}
-        </Box>
+        <Chip
+          size="small"
+          label={params.row.interestLevel}
+          color={
+            params.row.interestLevel === 'high'
+              ? 'success'
+              : params.row.interestLevel === 'medium'
+              ? 'warning'
+              : 'error'
+          }
+          variant="outlined"
+        />
       ),
     },
     {
@@ -184,23 +239,17 @@ const WalkIns: React.FC = (): JSX.Element => {
       headerName: 'Status',
       width: 150,
       renderCell: (params: GridRenderCellParams<WalkIn>) => (
-        <Box
-          sx={{
-            backgroundColor:
-              params.row.status === 'converted'
-                ? 'success.light'
-                : params.row.status === 'pending'
-                ? 'warning.light'
-                : 'error.light',
-            color: 'white',
-            px: 2,
-            py: 0.5,
-            borderRadius: 1,
-            textTransform: 'capitalize',
-          }}
-        >
-          {params.row.status.replace('_', ' ')}
-        </Box>
+        <Chip
+          size="small"
+          label={params.row.status.replace('_', ' ')}
+          color={
+            params.row.status === 'converted'
+              ? 'success'
+              : params.row.status === 'pending'
+              ? 'warning'
+              : 'error'
+          }
+        />
       ),
     },
     {
@@ -219,6 +268,18 @@ const WalkIns: React.FC = (): JSX.Element => {
               }}
             >
               <EditIcon />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Delete">
+            <IconButton
+              size="small"
+              color="error"
+              onClick={() => {
+                setItemsToDelete([params.row.id!]);
+                setDeleteConfirmOpen(true);
+              }}
+            >
+              <DeleteIcon />
             </IconButton>
           </Tooltip>
           {params.row.status === 'pending' && (
@@ -258,68 +319,73 @@ const WalkIns: React.FC = (): JSX.Element => {
         walkIn.phone.includes(filters.searchQuery) ||
         walkIn.email?.toLowerCase().includes(filters.searchQuery.toLowerCase());
 
-    const matchesDateRange =
-      !filters.dateRange.start || !filters.dateRange.end
-        ? true
-        : isWithinInterval(parseISO(walkIn.visitDate), {
-            start: parseISO(filters.dateRange.start),
-            end: parseISO(filters.dateRange.end),
-          });
+    let matchesDateRange = true;
+    
+    // Check date range only if both start and end dates are provided
+    if (filters.dateRange.start && filters.dateRange.end) {
+      try {
+        const visitDate = parseISO(walkIn.visitDate);
+        const startDate = parseISO(filters.dateRange.start);
+        const endDate = parseISO(filters.dateRange.end);
+        
+        matchesDateRange = isWithinInterval(visitDate, {
+          start: startDate,
+          end: endDate,
+        });
+      } catch (error) {
+        console.error('Error filtering by date range:', error);
+        // If there's an error parsing dates, include the item
+        matchesDateRange = true;
+      }
+    }
 
     return matchesStatus && matchesSearch && matchesDateRange;
   });
 
   return (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <Card sx={{ mb: 2 }}>
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 2, p: 3 }}>
+      <Card>
         <CardContent>
-          <Grid container spacing={2} alignItems="center">
-            <Grid item xs={12} md={3}>
-              <TextField
-                fullWidth
-                label="Search"
-                value={filters.searchQuery}
-                onChange={(e) =>
-                  dispatch(setFilters({ searchQuery: e.target.value }))
-                }
-                placeholder="Search by name, email, or phone"
-              />
-            </Grid>
-
-            <Grid item xs={12} md={2}>
-              <TextField
-                fullWidth
-                label="From Date"
-                type="date"
-                value={filters.dateRange.start || ''}
-                onChange={(e) =>
-                  dispatch(
-                    setFilters({
-                      dateRange: { ...filters.dateRange, start: e.target.value },
-                    })
-                  )
-                }
-                InputLabelProps={{
-                  shrink: true,
+          <Box display="flex" alignItems="center" justifyContent="space-between" mb={3}>
+            <Typography variant="h5" component="h1">
+              Walk-in Management
+            </Typography>
+            <Box display="flex" gap={1}>
+              <Button
+                variant="contained"
+                startIcon={<NotificationsIcon />}
+                onClick={() => setShowFollowUps(!showFollowUps)}
+                color={showFollowUps ? 'primary' : 'inherit'}
+              >
+                Follow-ups
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={() => {
+                  setSelectedWalkIn(undefined);
+                  setIsEditMode(false);
+                  setIsFormOpen(true);
                 }}
-              />
-            </Grid>
+              >
+                Add Walk-in
+              </Button>
+            </Box>
+          </Box>
 
-            <Grid item xs={12} md={2}>
+          <Grid container spacing={2} alignItems="center">
+            <Grid item xs={12} md={4}>
               <TextField
                 fullWidth
-                label="To Date"
-                type="date"
-                value={filters.dateRange.end || ''}
-                onChange={(e) =>
-                  dispatch(
-                    setFilters({
-                      dateRange: { ...filters.dateRange, end: e.target.value },
-                    })
-                  )
-                }
-                InputLabelProps={{
-                  shrink: true,
+                placeholder="Search by name, phone, or email"
+                value={filters.searchQuery}
+                onChange={(e) => dispatch(setFilters({ searchQuery: e.target.value }))}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon />
+                    </InputAdornment>
+                  ),
                 }}
               />
             </Grid>
@@ -344,45 +410,106 @@ const WalkIns: React.FC = (): JSX.Element => {
               </TextField>
             </Grid>
 
+            <Grid item xs={12} md={3}>
+              <Box display="flex" flexDirection="column" gap={2}>
+                <Box display="flex" alignItems="center" gap={1}>
+                  <DatePicker
+                    label="Visit Date From"
+                    value={filters.dateRange.start ? parseISO(filters.dateRange.start) : null}
+                    onChange={(date) =>
+                      dispatch(
+                        setFilters({
+                          dateRange: {
+                            ...filters.dateRange,
+                            start: date ? format(date, 'yyyy-MM-dd') : null,
+                          },
+                        })
+                      )
+                    }
+                    slotProps={{
+                      textField: {
+                        fullWidth: true,
+                        size: "small",
+                        InputProps: {
+                          startAdornment: (
+                            <InputAdornment position="start">
+                              <CalendarIcon />
+                            </InputAdornment>
+                          ),
+                        },
+                      },
+                    }}
+                  />
+                </Box>
+                <Box display="flex" alignItems="center" gap={1}>
+                  <DatePicker
+                    label="Visit Date To"
+                    value={filters.dateRange.end ? parseISO(filters.dateRange.end) : null}
+                    onChange={(date) =>
+                      dispatch(
+                        setFilters({
+                          dateRange: {
+                            ...filters.dateRange,
+                            end: date ? format(date, 'yyyy-MM-dd') : null,
+                          },
+                        })
+                      )
+                    }
+                    slotProps={{
+                      textField: {
+                        fullWidth: true,
+                        size: "small",
+                        InputProps: {
+                          startAdornment: (
+                            <InputAdornment position="start">
+                              <CalendarIcon />
+                            </InputAdornment>
+                          ),
+                        },
+                      },
+                    }}
+                    minDate={filters.dateRange.start ? parseISO(filters.dateRange.start) : undefined}
+                  />
+                </Box>
+                {(filters.dateRange.start || filters.dateRange.end) && (
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={<ClearIcon />}
+                    onClick={() => 
+                      dispatch(
+                        setFilters({
+                          dateRange: {
+                            start: null,
+                            end: null,
+                          },
+                        })
+                      )
+                    }
+                  >
+                    Clear Dates
+                  </Button>
+                )}
+              </Box>
+            </Grid>
+
             <Grid item xs={12} md={2}>
               <Box display="flex" gap={1}>
                 <Button
-                  fullWidth
-                  variant="contained"
-                  startIcon={<AddIcon />}
-                  onClick={() => {
-                    setSelectedWalkIn(undefined);
-                    setIsEditMode(false);
-                    setIsFormOpen(true);
-                  }}
-                >
-                  Add Walk-in
-                </Button>
-                <Button
-                  variant="contained"
+                  variant="outlined"
                   startIcon={<ImportIcon />}
                   onClick={() => setIsImportDialogOpen(true)}
                 >
                   Import
                 </Button>
                 <Button
-                  variant="contained"
+                  variant="outlined"
                   startIcon={<ExportIcon />}
                   onClick={handleExportMenuOpen}
                   disabled={walkIns.length === 0}
                 >
                   Export
                 </Button>
-                {selectedRows.length > 0 && (
-                  <Button
-                    variant="contained"
-                    color="error"
-                    startIcon={<DeleteIcon />}
-                    onClick={() => {/* Handle delete */}}
-                  >
-                    Delete ({selectedRows.length})
-                  </Button>
-                )}
                 <Menu
                   anchorEl={exportMenuAnchor}
                   open={Boolean(exportMenuAnchor)}
@@ -395,7 +522,7 @@ const WalkIns: React.FC = (): JSX.Element => {
                     Today's Follow-ups
                   </MenuItem>
                   <MenuItem onClick={() => handleExport('upcoming')}>
-                    Upcoming Follow-ups (7 days)
+                    Upcoming Follow-ups
                   </MenuItem>
                 </Menu>
               </Box>
@@ -404,37 +531,42 @@ const WalkIns: React.FC = (): JSX.Element => {
         </CardContent>
       </Card>
 
-      {showFollowUps ? (
-        <FollowUpManager walkIns={walkIns} />
-      ) : (
-        <DataGrid
-          rows={filteredWalkIns}
-          columns={columns}
-          loading={loading}
-          getRowId={(row) => row.id!}
-          initialState={{
-            pagination: {
-              paginationModel: {
-                pageSize: 10,
-              },
-            },
-          }}
-          pageSizeOptions={[10, 25, 50]}
-          disableRowSelectionOnClick
-          autoHeight
-          checkboxSelection
-          onRowSelectionModelChange={(newSelection) => {
-            setSelectedRows(newSelection);
-            const selected = walkIns.find((walkIn) => walkIn.id === newSelection[0]);
-            setSelectedWalkIn(selected);
-          }}
-          sx={{
-            '& .MuiDataGrid-cell:focus': {
-              outline: 'none',
-            },
-          }}
-        />
-      )}
+      <Paper sx={{ flexGrow: 1 }}>
+        <Box display="flex" height="100%">
+          <Box flexGrow={1}>
+            <DataGrid
+              rows={filteredWalkIns}
+              columns={columns}
+              loading={loading}
+              checkboxSelection
+              disableRowSelectionOnClick
+              onRowSelectionModelChange={setSelectedRows}
+              rowSelectionModel={selectedRows}
+              slots={{ toolbar: GridToolbar }}
+              slotProps={{
+                toolbar: {
+                  showQuickFilter: true,
+                  quickFilterProps: { debounceMs: 500 },
+                },
+              }}
+              sx={{
+                height: '100%',
+                '& .MuiDataGrid-cell:focus': {
+                  outline: 'none',
+                },
+              }}
+            />
+          </Box>
+          {showFollowUps && (
+            <>
+              <Divider orientation="vertical" flexItem />
+              <Box width={400} p={2} sx={{ overflowY: 'auto' }}>
+                <FollowUpManager walkIns={walkIns} />
+              </Box>
+            </>
+          )}
+        </Box>
+      </Paper>
 
       <WalkInForm
         open={isFormOpen}
@@ -451,10 +583,28 @@ const WalkIns: React.FC = (): JSX.Element => {
         open={isImportDialogOpen}
         onClose={() => setIsImportDialogOpen(false)}
         onSuccess={() => {
-          refreshWalkIns();
           setIsImportDialogOpen(false);
+          refreshWalkIns();
         }}
       />
+
+      <Dialog
+        open={deleteConfirmOpen}
+        onClose={() => setDeleteConfirmOpen(false)}
+      >
+        <DialogTitle>Confirm Delete</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete {itemsToDelete.length === 1 ? 'this walk-in' : `these ${itemsToDelete.length} walk-ins`}? This action cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteConfirmOpen(false)}>Cancel</Button>
+          <Button onClick={handleDelete} color="error" variant="contained">
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <ToastContainer />
     </Box>

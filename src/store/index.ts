@@ -3,6 +3,8 @@ import memberReducer from './slices/memberSlice';
 import dashboardReducer from './slices/dashboardSlice';
 import analyticsReducer from './slices/analyticsSlice';
 import walkInReducer from './slices/walkInSlice';
+import staffReducer from './slices/staffSlice';
+import settingsReducer from './slices/settingsSlice';
 
 export const store = configureStore({
   reducer: {
@@ -10,6 +12,8 @@ export const store = configureStore({
     dashboard: dashboardReducer,
     analytics: analyticsReducer,
     walkIns: walkInReducer,
+    staff: staffReducer,
+    settings: settingsReducer,
   },
 });
 
